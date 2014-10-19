@@ -4,14 +4,22 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <GLFW/glfw3.h>
-#include "vincent.h"
+#include "font.h"
+#include "ConsoleGL.h"
 
 static void (*sTickCallback)(void);
 static GLboolean sDirty = GL_TRUE;
 static GLushort *sChars;
 static GLubyte *sTexture;
+static int sCharsWidth;
+static int sCharsHeight;
+static int sCharsArea;
+static int sCharsXPos = 0;
+static int sCharsYPos = 0;
+static char* sPrintFBuffer;
 
 static GLuint *sIndexBuffer;
 static GLfloat *sVertexBuffer;
@@ -28,6 +36,13 @@ const char* _CGLerror(const char* _msg)
  */
 const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_callback)(void))
 {
+    sCharsWidth = _columns;
+    sCharsHeight = _rows;
+    sCharsArea = _columns * _rows;
+    
+    sPrintFBuffer = malloc(sizeof(char) * sCharsArea);
+    if (!sPrintFBuffer) return _CGLerror("ERROR: Cannot allocate printf buffer.");
+    
     sTickCallback = _callback;
     GLFWwindow* window;
     
@@ -35,12 +50,14 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
     if (!glfwInit()) return _CGLerror("ERROR: glfwInit failed.");
     
     /* Create a windowed mode window and its OpenGL context */
-    window = glfwCreateWindow(_columns * 8, _rows * 8, _windowTitle, NULL, NULL);
+    glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
+    window = glfwCreateWindow(_columns * 8 * 2, _rows * 8 * 2, _windowTitle, NULL, NULL);
     if (!window) return _CGLerror("ERROR: glfwCreateWindow failed.");
     
     // Allocate screen buffer
     sChars = malloc(_columns * _rows * sizeof(unsigned short));
     if (!sChars) return _CGLerror("ERROR: Cannot allocate screen buffer.");
+    memset(sChars, 0, sCharsArea * sizeof(GLushort));
     
     // Allocate texture
     sTexture = malloc(128 * 128);
@@ -50,11 +67,11 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
     {
         for (int x = 0; x < 16; x++)
         {
-            for (int y = 0; y < 8; y++)
+            for (int y = 0; y < 16; y++)
             {
                 for (int yy = 0; yy < 8; yy++)
                 {
-                    GLubyte row = vincent_data[y * 16 + x][yy];
+                    GLubyte row = font_data[((y * 16 + x) * 8) + yy];
                     for (int xx = 0; xx < 8; xx++)
                     {
                         GLubyte alpha = ((row >> (7 - xx)) & 1) * 255;
@@ -62,15 +79,6 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
                     }
                 }
             }
-        }
-    }
-    
-    // Write some test data to screen buffer
-    {
-        int len = _rows * _columns;
-        for (int i = 0; i < len; i++)
-        {
-            sChars[i] = i & 127;
         }
     }
     
@@ -97,8 +105,8 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     
     // Build VBOs
     size_t size;
@@ -154,20 +162,6 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
     sTextureCoordBuffer = malloc(size);
     if (!sTextureCoordBuffer) return _CGLerror("ERROR: Cannot allocate texture coordinate vbo.");
     memset(sTextureCoordBuffer, 0, size);
-    for (int y = 0; y < _rows; y++)
-    {
-        for (int x = 0; x < _columns; x++)
-        {
-            static const float offsets[8] = {0,0,8,0,0,8,8,8};
-            int i = 0;
-            const GLuint addr = (y * _columns + x) * (4 * 2);
-            while(i < 8)
-            {
-                sTextureCoordBuffer[addr + i] = (x * 8) + offsets[i]; i++;
-                sTextureCoordBuffer[addr + i] = (y * 8) + offsets[i]; i++;
-            }
-        }
-    }
     glGenBuffers(1, &textureCoordHandle);
     glBindBuffer(GL_ARRAY_BUFFER, textureCoordHandle);
     glBufferData(GL_ARRAY_BUFFER, size, sTextureCoordBuffer, GL_DYNAMIC_DRAW);
@@ -181,7 +175,26 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
         if (sDirty)
         {
             sDirty = GL_FALSE;
-            
+            static const float offsets[8] = {0,0,8,0,0,8,8,8};
+            for (int y = 0; y < _rows; y++)
+            {
+                for (int x = 0; x < _columns; x++)
+                {
+                    const GLushort c = sChars[y * sCharsWidth + x];
+                    const int row = c / 16;
+                    const int col = c % 16;
+                    
+                    int i = 0;
+                    const GLuint addr = (y * _columns + x) * (4 * 2);
+                    while(i < 8)
+                    {
+                        sTextureCoordBuffer[addr + i] = (col * 8) + offsets[i]; i++;
+                        sTextureCoordBuffer[addr + i] = (row * 8) + offsets[i]; i++;
+                    }
+                }
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, textureCoordHandle);
+            glBufferData(GL_ARRAY_BUFFER, size, sTextureCoordBuffer, GL_DYNAMIC_DRAW);
         }
 
         glClear(GL_COLOR_BUFFER_BIT);
@@ -196,7 +209,6 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
         glVertexPointer(3, GL_FLOAT, 0, 0);
         
         glBindBuffer(GL_ARRAY_BUFFER, textureCoordHandle);
-//        glClientActiveTexture(GL_TEXTURE0);
         glEnableClientState(GL_TEXTURE_COORD_ARRAY);
         glTexCoordPointer(2, GL_SHORT, 0, 0);
         
@@ -245,7 +257,11 @@ void CGLsetAttribXY(int _attrib, int _col, int _row)
  */
 void CGLgotoXY(int _col, int _row)
 {
-    
+    if (_col < 0) return;
+    if (_row < 0) return;
+    if (_col * _row > sCharsArea) return;
+    sCharsXPos = _col;
+    sCharsYPos = _row;
 }
 
 /**
@@ -253,7 +269,21 @@ void CGLgotoXY(int _col, int _row)
  */
 void CGLprintf(const char * _format, ...)
 {
-    
+    char buffer[sCharsArea];
+    va_list args;
+    va_start (args, _format);
+    vsnprintf (buffer, sCharsArea, _format, args);
+    CGLprint(buffer);
+    va_end (args);
+}
+
+void CGLprint(const char * _string)
+{
+    int len = strlen(_string);
+    for (int i = 0; i < len; ++i)
+    {
+        CGLputc(_string[i]);
+    }
 }
 
 /**
@@ -261,7 +291,40 @@ void CGLprintf(const char * _format, ...)
  */
 void CGLputc(char _char)
 {
-    
+    switch (_char)
+    {
+        case '\n':
+        {
+            sCharsXPos = 0;
+            sCharsYPos++;
+            break;
+        }
+            
+        default:
+        {
+            int pos = sCharsYPos * sCharsWidth + sCharsXPos++;
+            if (pos >= sCharsArea || pos < 0) return;
+            sChars[pos] = _char;
+            sDirty = GL_TRUE;
+            if (sCharsXPos == sCharsWidth)
+            {
+                sCharsXPos = 0;
+                sCharsYPos++;
+            }
+            break;
+        }
+    }
+}
+
+/**
+ * Prints a single char to the screen
+ */
+void CGLputcXY(char _char, int _col, int _row)
+{
+    int pos = _row * sCharsWidth + _col;
+    if(pos >= sCharsArea || pos < 0) return;
+    sChars[pos] = _char;
+    sDirty = GL_TRUE;
 }
 
 /**

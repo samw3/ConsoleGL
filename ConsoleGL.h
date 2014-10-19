@@ -2,6 +2,9 @@
 //
 // Licensed public domain
 
+#ifndef CONSOLE_GL_H
+#define CONSOLE_GL_H
+
 /**
  *  Opens a window
  */
@@ -26,6 +29,11 @@ void CGLsetAttribXY(int _attrib, int _col, int _row);
 void CGLgotoXY(int _col, int _row);
 
 /**
+ * Print an unformatted string
+ */
+void CGLprint(const char * _string);
+
+/**
  * Print a formatted string
  */
 void CGLprintf(const char * _format, ...);
@@ -36,6 +44,13 @@ void CGLprintf(const char * _format, ...);
 void CGLputc(char _char);
 
 /**
+ * Prints a single char to the screen at col, row
+ */
+void CGLputcXY(char _char, int _col, int _row);
+
+/**
  * Closes the window and cleans up
  */
 void CGLshutdown();
+
+#endif
