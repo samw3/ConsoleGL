@@ -10,6 +10,27 @@
 #include "font.h"
 #include "ConsoleGL.h"
 
+static const GLubyte sPalette[] = {
+    0x00, 0x00, 0x00, // 0 Black
+    0xaa, 0x00, 0x00, // 1 Red
+    0x00, 0xaa, 0x00, // 2 Green
+    0xaa, 0x55, 0x00, // 3 Yellow
+    0x00, 0x00, 0xaa, // 4 Blue
+    0xaa, 0x00, 0xaa, // 5 Magenta
+    0x00, 0xaa, 0xaa, // 6 Cyan
+    0xaa, 0xaa, 0xaa, // 7 White
+    0x55, 0x55, 0x55, // 8 Br. Black
+    0xff, 0x55, 0x55, // 9 Br. Red
+    0x55, 0xff, 0x55, // A Br. Green
+    0xff, 0xff, 0x55, // B Br. Yellow
+    0x55, 0x55, 0xff, // C Br. Blue
+    0xff, 0x55, 0xff, // D Br. Magenta
+    0x55, 0xff, 0xff, // E Br. Cyan
+    0xff, 0xff, 0xff, // F Br. White
+};
+
+#define BLINK_SPEED (30)
+
 static void (*sTickCallback)(void);
 static GLboolean sDirty = GL_TRUE;
 static GLushort *sChars;
@@ -19,11 +40,17 @@ static int sCharsHeight;
 static int sCharsArea;
 static int sCharsXPos = 0;
 static int sCharsYPos = 0;
+static GLshort sLastAttrib = (128 + 31) << 8;
 static char* sPrintFBuffer;
 
 static GLuint *sIndexBuffer;
 static GLfloat *sVertexBuffer;
 static GLshort *sTextureCoordBuffer;
+static GLubyte *sFgColorBuffer;
+static GLubyte *sBgColorBuffer;
+
+static int sBlinkTimer = BLINK_SPEED;
+static GLboolean sBlinkState = GL_FALSE;
 
 const char* _CGLerror(const char* _msg)
 {
@@ -166,11 +193,57 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
     glBindBuffer(GL_ARRAY_BUFFER, textureCoordHandle);
     glBufferData(GL_ARRAY_BUFFER, size, sTextureCoordBuffer, GL_DYNAMIC_DRAW);
     
+    // Create Foreground Color Buffer
+    GLuint fgColorHandle;
+    size = _columns * _rows * 4 * 4 * sizeof(GLubyte);
+    sFgColorBuffer = malloc(size);
+    if (!sFgColorBuffer) return _CGLerror("ERROR: Cannot allocate foreground color vbo.");
+    memset(sFgColorBuffer, 255, size);
+    glGenBuffers(1, &fgColorHandle);
+    glBindBuffer(GL_ARRAY_BUFFER, fgColorHandle);
+    glBufferData(GL_ARRAY_BUFFER, size, sFgColorBuffer, GL_DYNAMIC_DRAW);
+    
+    // Create Background Color Buffer
+    GLuint bgColorHandle;
+    size = _columns * _rows * 4 * 4 * sizeof(GLubyte);
+    sBgColorBuffer = malloc(size);
+    if (!sBgColorBuffer) return _CGLerror("ERROR: Cannot allocate background color vbo.");
+    memset(sBgColorBuffer, 0, size);
+    glGenBuffers(1, &bgColorHandle);
+    glBindBuffer(GL_ARRAY_BUFFER, bgColorHandle);
+    glBufferData(GL_ARRAY_BUFFER, size, sBgColorBuffer, GL_DYNAMIC_DRAW);
+    
+    CGLprint("Hello World");
+    
     /* Loop until the user closes the window */
     while (!glfwWindowShouldClose(window))
     {
         /* Render here */
         sTickCallback();
+        
+        sBlinkTimer--;
+        if (sBlinkTimer < 0)
+        {
+            sBlinkState = !sBlinkState;
+            sBlinkTimer = BLINK_SPEED;
+            if (!sDirty)
+            {
+                for (int y = 0; y < _rows; y++)
+                {
+                    for (int x = 0; x < _columns; x++)
+                    {
+                        const GLushort d = sChars[y * sCharsWidth + x];
+                        const GLubyte blink = (d >> 15) & 1; // TODO: Implement
+                        if (blink == 1)
+                        {
+                            sDirty = GL_TRUE;
+                            break;
+                        }
+                    }
+                    if (sDirty) break;
+                }
+            }
+        }
         
         if (sDirty)
         {
@@ -180,37 +253,80 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
             {
                 for (int x = 0; x < _columns; x++)
                 {
-                    const GLushort c = sChars[y * sCharsWidth + x];
+                    const GLushort d = sChars[y * sCharsWidth + x];
+                    const GLushort c = d & 255;
                     const int row = c / 16;
                     const int col = c % 16;
+                    const GLubyte bg = (d >> 12) & 7;
+                    const GLubyte bgr = sPalette[bg * 3 + 0];
+                    const GLubyte bgg = sPalette[bg * 3 + 1];
+                    const GLubyte bgb = sPalette[bg * 3 + 2];
+                    const GLubyte blink = (d >> 15) & 1; // TODO: Implement
+                    const GLubyte fg = (d >> 8) & 15;
+                    const GLubyte fgr = (blink == 1 && sBlinkState) ? bgr : sPalette[fg * 3 + 0];
+                    const GLubyte fgg = (blink == 1 && sBlinkState) ? bgg : sPalette[fg * 3 + 1];
+                    const GLubyte fgb = (blink == 1 && sBlinkState) ? bgb : sPalette[fg * 3 + 2];
                     
-                    int i = 0;
+
                     const GLuint addr = (y * _columns + x) * (4 * 2);
+                    int i = 0;
                     while(i < 8)
                     {
                         sTextureCoordBuffer[addr + i] = (col * 8) + offsets[i]; i++;
                         sTextureCoordBuffer[addr + i] = (row * 8) + offsets[i]; i++;
                     }
+                    
+                    const GLuint addr2 = (y * _columns + x) * (4 * 4);
+                    i = 0;
+                    while (i < 16)
+                    {
+                        sFgColorBuffer[addr2 + i] = fgr;
+                        sBgColorBuffer[addr2 + i++] = bgr;
+                        sFgColorBuffer[addr2 + i] = fgg;
+                        sBgColorBuffer[addr2 + i++] = bgg;
+                        sFgColorBuffer[addr2 + i] = fgb;
+                        sBgColorBuffer[addr2 + i++] = bgb;
+                        sFgColorBuffer[addr2 + i] = 255;
+                        sBgColorBuffer[addr2 + i++] = 255;
+                    }
                 }
             }
             glBindBuffer(GL_ARRAY_BUFFER, textureCoordHandle);
             glBufferData(GL_ARRAY_BUFFER, size, sTextureCoordBuffer, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, fgColorHandle);
+            glBufferData(GL_ARRAY_BUFFER, size, sFgColorBuffer, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, bgColorHandle);
+            glBufferData(GL_ARRAY_BUFFER, size, sBgColorBuffer, GL_DYNAMIC_DRAW);
         }
 
         glClear(GL_COLOR_BUFFER_BIT);
 
-        glEnable(GL_TEXTURE_2D);
-        glEnable(GL_BLEND);
-        glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glBindTexture(GL_TEXTURE_2D, texId);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_BLEND);
         
         glBindBuffer(GL_ARRAY_BUFFER, vertexHandle);
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(3, GL_FLOAT, 0, 0);
         
+        glBindBuffer(GL_ARRAY_BUFFER, bgColorHandle);
+        glEnableClientState(GL_COLOR_ARRAY);
+        glColorPointer(4, GL_UNSIGNED_BYTE, 0, 0);
+        
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexHandle);
+        glDrawElements(GL_TRIANGLES, _columns * _rows * 6, GL_UNSIGNED_INT, 0);
+        
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBindTexture(GL_TEXTURE_2D, texId);
+        
         glBindBuffer(GL_ARRAY_BUFFER, textureCoordHandle);
         glEnableClientState(GL_TEXTURE_COORD_ARRAY);
         glTexCoordPointer(2, GL_SHORT, 0, 0);
+        
+        glBindBuffer(GL_ARRAY_BUFFER, fgColorHandle);
+        glEnableClientState(GL_COLOR_ARRAY);
+        glColorPointer(4, GL_UNSIGNED_BYTE, 0, 0);
         
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexHandle);
         glDrawElements(GL_TRIANGLES, _columns * _rows * 6, GL_UNSIGNED_INT, 0);
@@ -241,7 +357,17 @@ const char* CGLmain(const char* _windowTitle, int _columns, int _rows, void (*_c
  */
 void CGLsetAttrib(int _attrib)
 {
-    
+    int pos = sCharsYPos * sCharsWidth + sCharsXPos;
+    if (pos >= sCharsArea || pos < 0) return;
+
+    CGLsetAttribXY(_attrib, sCharsXPos, sCharsYPos);
+
+    sCharsXPos++;
+    if (sCharsXPos >= sCharsWidth)
+    {
+        sCharsXPos = 0;
+        sCharsYPos++;
+    }
 }
 
 /**
@@ -249,7 +375,11 @@ void CGLsetAttrib(int _attrib)
  */
 void CGLsetAttribXY(int _attrib, int _col, int _row)
 {
-    
+    int pos = _row * sCharsWidth + _col;
+    if (pos >= sCharsArea || pos < 0) return;
+
+    sChars[pos] = (sChars[pos] & 255) | (_attrib << 8);
+    sDirty = GL_TRUE;
 }
 
 /**
@@ -282,7 +412,22 @@ void CGLprint(const char * _string)
     int len = strlen(_string);
     for (int i = 0; i < len; ++i)
     {
-        CGLputc(_string[i]);
+        char c = _string[i];
+        switch (c)
+        {
+            case '\n':
+            {
+                sCharsXPos = 0;
+                sCharsYPos++;
+                break;
+            }
+                
+            default:
+            {
+                CGLputc(c);
+                break;
+            }
+        }
     }
 }
 
@@ -291,28 +436,14 @@ void CGLprint(const char * _string)
  */
 void CGLputc(char _char)
 {
-    switch (_char)
+    int pos = sCharsYPos * sCharsWidth + sCharsXPos++;
+    if (pos >= sCharsArea || pos < 0) return;
+    sChars[pos] = _char | sLastAttrib;
+    sDirty = GL_TRUE;
+    if (sCharsXPos == sCharsWidth)
     {
-        case '\n':
-        {
-            sCharsXPos = 0;
-            sCharsYPos++;
-            break;
-        }
-            
-        default:
-        {
-            int pos = sCharsYPos * sCharsWidth + sCharsXPos++;
-            if (pos >= sCharsArea || pos < 0) return;
-            sChars[pos] = _char;
-            sDirty = GL_TRUE;
-            if (sCharsXPos == sCharsWidth)
-            {
-                sCharsXPos = 0;
-                sCharsYPos++;
-            }
-            break;
-        }
+        sCharsXPos = 0;
+        sCharsYPos++;
     }
 }
 
